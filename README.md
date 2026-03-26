@@ -114,7 +114,7 @@ npm link
 
 ### Opcion C: Usar con npx (sin instalar)
 
-Si el paquete esta publicado en npm, puedes ejecutarlo sin instalar:
+Tambien puedes ejecutarlo sin instalar:
 
 ```bash
 npx generar-script-xlsx "archivo.xlsx"
