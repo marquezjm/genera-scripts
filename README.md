@@ -458,7 +458,7 @@ Las contribuciones son bienvenidas! Si encuentras un bug o tienes una mejora:
 Si tienes dudas o problemas:
 
 1. Revisa la seccion de [Solucion de problemas](#solucion-de-problemas)
-2. Busca en los [issues del repositorio](https://github.com/tu-usuario/generar-script-xlsx/issues)
+2. Busca en los [issues del repositorio](https://github.com/marquezjm/generar-script-xlsx/issues)
 3. Abre un nuevo issue si no encuentras la solucion
 
 ---
