@@ -1,6 +1,6 @@
 {
   "name": "generar-script-xlsx",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "Convierte archivos Excel en scripts SQL",
   "repository": {
     "type": "git",
