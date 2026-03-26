@@ -4,7 +4,7 @@
   "description": "Convierte archivos Excel en scripts SQL",
   "repository": {
     "type": "git",
-    "url": "https://github.com/TU_USUARIO/generar-script-xlsx"
+    "url": "https://github.com/marquezjm/generar-script-xlsx"
   },
   "main": "index.js",
   "type": "module",
