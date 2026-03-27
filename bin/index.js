@@ -9,10 +9,10 @@ import inquirer from 'inquirer';
 const program = new Command();
 
 program
-  .version('1.0.0')
+  .version('1.0.1')
   .description('Generate SQL scripts from Excel file.')
   .argument('<inputFile>', 'Path to the input Excel file')
-  .option('-k, --key-columns <keys>', 'Key columns configuration', 'NUMERO_INSTITUCION,TRANSACCION_EXTERNA')
+  .option('-k, --key-columns <keys>', 'Key columns configuration', 'NUMERO_INSTITUCION')
   .action(async (inputFile, options) => {
     try {
         await processFile(inputFile, options.keyColumns);
@@ -92,7 +92,7 @@ async function processFile(inputFile, keyColumnsArg) {
 
   // Parse key columns configuration
   let sheetKeysConfig = {};
-  let globalDefaultKeys = ['NUMERO_INSTITUCION', 'TRANSACCION_EXTERNA'];
+  let globalDefaultKeys = ['NUMERO_INSTITUCION'];
 
   const rawConfig = keyColumnsArg;
 
@@ -161,8 +161,12 @@ async function processFile(inputFile, keyColumnsArg) {
     console.log(`  -> Action Column: '${headers[actionColIdx]}' (Index ${actionColIdx})`);
 
     let keyColumns = [...globalDefaultKeys];
+    let deleteBeforeInsert = false;
+    let insertKeyColumns = [...globalDefaultKeys];
     
     let hasUpdate = false;
+    let hasInsert = false;
+    
     sheet.eachRow((row, rowNumber) => {
         if (rowNumber === 1) return;
         if (actionColIdx + 1 > row.cellCount) return;
@@ -171,6 +175,9 @@ async function processFile(inputFile, keyColumnsArg) {
         const val = cell.value ? String(cell.value).trim().toUpperCase() : '';
         if (val === 'UPDATE') {
             hasUpdate = true;
+        }
+        if (val === 'INSERT') {
+            hasInsert = true;
         }
     });
 
@@ -204,6 +211,47 @@ async function processFile(inputFile, keyColumnsArg) {
         }
     }
 
+    // Ask about DELETE before INSERT
+    if (hasInsert) {
+        const availableCols = headers.filter(h => h);
+        
+        console.log(chalk.yellow(`\n[!] INSERT operations detected in '${sheetName}'`));
+        
+        const deleteAnswer = await inquirer.prompt([
+            {
+                type: 'confirm',
+                name: 'deleteBeforeInsert',
+                message: 'Do you want to DELETE existing records before INSERT?',
+                default: false
+            }
+        ]);
+        
+        deleteBeforeInsert = deleteAnswer.deleteBeforeInsert;
+        
+        if (deleteBeforeInsert) {
+            console.log(chalk.cyan(`\n[!] Please select the Key Columns for the DELETE WHERE clause (based on INSERT data):`));
+            
+            const insertKeysAnswer = await inquirer.prompt([
+                {
+                    type: 'checkbox',
+                    name: 'selectedKeys',
+                    message: 'Select the Key Columns for DELETE WHERE:',
+                    choices: availableCols,
+                    default: globalDefaultKeys.filter(k => availableCols.includes(k)),
+                    validate: (input) => {
+                        if (input.length < 1) {
+                            return 'You must choose at least one key column.';
+                        }
+                        return true;
+                    }
+                }
+            ]);
+            
+            insertKeyColumns = insertKeysAnswer.selectedKeys;
+            console.log(`    -> Selected keys for DELETE: ${insertKeyColumns.join(', ')}\n`);
+        }
+    }
+
     console.log(`Generating ${outputPath}...`);
     
     const colMap = {};
@@ -212,8 +260,11 @@ async function processFile(inputFile, keyColumnsArg) {
     });
 
     const hasKeys = keyColumns.every(k => Object.prototype.hasOwnProperty.call(colMap, k));
+    const hasInsertKeys = deleteBeforeInsert ? insertKeyColumns.every(k => Object.prototype.hasOwnProperty.call(colMap, k)) : true;
 
-    let sqlContent = `BEGIN TRAN TRAN_${sheetName}\n\nBEGIN TRY\n`;
+    let deleteStatements = '';
+    let insertStatements = '';
+    let updateStatements = '';
     
     let generatedRows = 0;
 
@@ -231,6 +282,32 @@ async function processFile(inputFile, keyColumnsArg) {
         generatedRows++;
 
         if (action === 'INSERT') {
+            // Generate DELETE before INSERT if requested
+            if (deleteBeforeInsert) {
+                if (!hasInsertKeys) {
+                    const msg = `-- ERROR: Missing INSERT key columns ${insertKeyColumns.join(',')} in sheet ${sheetName}\n`;
+                    deleteStatements += msg;
+                    console.error(chalk.red(`    [!] Error: ${msg.trim()}`));
+                    return;
+                }
+                
+                const deleteWhereClauses = [];
+                insertKeyColumns.forEach(key => {
+                    const idx = colMap[key];
+                    if (idx !== undefined) {
+                        const cell = row.getCell(idx + 1);
+                        const val = formatValue(cell.value);
+                        deleteWhereClauses.push(`${key} = ${val}`);
+                    }
+                });
+                
+                if (deleteWhereClauses.length > 0) {
+                    const whereStr = deleteWhereClauses.join(' AND ');
+                    deleteStatements += `DELETE FROM ${sheetName} WHERE ${whereStr};\n`;
+                }
+            }
+            
+            // Generate INSERT
             const cols = [];
             const vals = [];
             
@@ -246,13 +323,13 @@ async function processFile(inputFile, keyColumnsArg) {
             if (cols.length > 0) {
                 const colStr = cols.join(', ');
                 const valStr = vals.join(', ');
-                sqlContent += `INSERT INTO ${sheetName} (${colStr}) VALUES (${valStr});\n`;
+                insertStatements += `INSERT INTO ${sheetName} (${colStr}) VALUES (${valStr});\n`;
             }
 
         } else if (action === 'UPDATE') {
             if (!hasKeys) {
                 const msg = `-- ERROR: Missing key columns ${keyColumns.join(',')} in sheet ${sheetName}\n`;
-                sqlContent += msg;
+                updateStatements += msg;
                 console.error(chalk.red(`    [!] Error: ${msg.trim()}`));
                 return;
             }
@@ -282,22 +359,28 @@ async function processFile(inputFile, keyColumnsArg) {
             if (setClauses.length > 0) {
                     const setStr = setClauses.join(', ');
                     const whereStr = whereClauses.join(' AND ');
-                    sqlContent += `UPDATE ${sheetName} SET ${setStr} WHERE ${whereStr};\n`;
+                    updateStatements += `UPDATE ${sheetName} SET ${setStr} WHERE ${whereStr};\n`;
             }
         }
     });
+
+    // Combine all statements in order: DELETE -> INSERT -> UPDATE
+    let sqlContent = `BEGIN TRAN TRAN_\n\nBEGIN TRY\n`;
+    sqlContent += deleteStatements;
+    sqlContent += insertStatements;
+    sqlContent += updateStatements;
 
     if (generatedRows === 0) {
         console.log(chalk.yellow(`  -> Warning: No SQL statements were generated for '${sheetName}'. Check Action column values.`));
         sqlContent += "-- Warning: No valid INSERT/UPDATE rows found.\n";
     }
 
-    sqlContent += `\nCOMMIT TRAN TRAN_${sheetName};\n`;
+    sqlContent += `\nCOMMIT TRAN TRAN_;\n`;
     sqlContent += "PRINT 'PROCESO EJECUTADO CORRECTAMENTE';\n";
     sqlContent += "END TRY\n";
     sqlContent += "BEGIN CATCH\n";
     sqlContent += "    SELECT 'LINEA ERROR - ' + CAST(ERROR_LINE() AS VARCHAR(5)) + ': ' + ERROR_MESSAGE();\n";
-    sqlContent += `    ROLLBACK TRAN TRAN_${sheetName};\n`;
+    sqlContent += `    ROLLBACK TRAN TRAN_;\n`;
     sqlContent += "    PRINT 'OCURRIO UN ERROR EN EL PROCESO';\n";
     sqlContent += "END CATCH\n";
 
